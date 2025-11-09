@@ -123,3 +123,34 @@ export async function getInterviewsByUserId(
     ...doc.data(),
   })) as Interview[];
 }
+
+export async function createInterview(params: {
+  userId: string;
+  role: string;
+  type: string;
+  techstack?: string[];
+  level?: string;
+  questions?: string[];
+  finalized?: boolean;
+}) {
+  try {
+    const interview = {
+      userId: params.userId,
+      role: params.role || "General Interview",
+      type: params.type || "Mixed",
+      techstack: params.techstack || [],
+      level: params.level || "Mid",
+      questions: params.questions || [],
+      finalized: params.finalized !== undefined ? params.finalized : true,
+      createdAt: new Date().toISOString(),
+    };
+
+    const interviewRef = db.collection("interviews").doc();
+    await interviewRef.set(interview);
+
+    return { success: true, interviewId: interviewRef.id };
+  } catch (error) {
+    console.error("Error creating interview:", error);
+    return { success: false, interviewId: null };
+  }
+}

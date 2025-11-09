@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { vapi } from "@/lib/vapi.sdk";
 import { interviewer } from "@/constants";
-import { createFeedback } from "@/lib/actions/general.action";
+import { createFeedback, createInterview } from "@/lib/actions/general.action";
 
 enum CallStatus {
   INACTIVE = "INACTIVE",
@@ -34,17 +34,21 @@ const Agent = ({
   const [messages, setMessages] = useState<SavedMessage[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastMessage, setLastMessage] = useState<string>("");
+  const [currentInterviewId, setCurrentInterviewId] = useState<string | undefined>(interviewId);
 
   useEffect(() => {
     const onCallStart = () => {
+      console.log("✅ [Call Event] Call started successfully");
       setCallStatus(CallStatus.ACTIVE);
     };
 
     const onCallEnd = () => {
+      console.log("📞 [Call Event] Call ended");
       setCallStatus(CallStatus.FINISHED);
     };
 
     const onMessage = (message: Message) => {
+      console.log("💬 [Message Event]:", message);
       if (message.type === "transcript" && message.transcriptType === "final") {
         const newMessage = { role: message.role, content: message.transcript };
         setMessages((prev) => [...prev, newMessage]);
@@ -61,8 +65,15 @@ const Agent = ({
       setIsSpeaking(false);
     };
 
-    const onError = (error: Error) => {
-      console.log("Error:", error);
+    const onError = (error: any) => {
+      console.error("❌ [Vapi Error Event]:", error);
+      console.error("Error details:", JSON.stringify(error, null, 2));
+      
+      // Show user-friendly alert
+      let errorMsg = "Call error occurred. ";
+      if (error?.message) errorMsg += error.message;
+      if (error?.error?.message) errorMsg += error.error.message;
+      alert(errorMsg + " Check console for details.");
     };
 
     vapi.on("call-start", onCallStart);
@@ -91,14 +102,14 @@ const Agent = ({
       console.log("handleGenerateFeedback");
 
       const { success, feedbackId: id } = await createFeedback({
-        interviewId: interviewId!,
+        interviewId: currentInterviewId!,
         userId: userId!,
         transcript: messages,
         feedbackId,
       });
 
       if (success && id) {
-        router.push(`/interview/${interviewId}/feedback`);
+        router.push(`/interview/${currentInterviewId}/feedback`);
       } else {
         console.log("Error saving feedback");
         router.push("/");
@@ -107,36 +118,102 @@ const Agent = ({
 
     if (callStatus === CallStatus.FINISHED) {
       if (type === "generate") {
-        router.push("/");
+        // For generated interviews, just go to homepage after call ends
+        if (currentInterviewId && messages.length > 0) {
+          // Interview was created and had conversation, generate feedback
+          handleGenerateFeedback(messages);
+        } else {
+          router.push("/");
+        }
       } else {
         handleGenerateFeedback(messages);
       }
     }
-  }, [messages, callStatus, feedbackId, interviewId, router, type, userId]);
+  }, [messages, callStatus, feedbackId, currentInterviewId, router, type, userId]);
 
   const handleCall = async () => {
-    setCallStatus(CallStatus.CONNECTING);
+    try {
+      setCallStatus(CallStatus.CONNECTING);
+      console.log("[Call] Initiating call flow...");
+      console.log("[Call] Token:", process.env.NEXT_PUBLIC_VAPI_WEB_TOKEN?.substring(0, 10) + "...");
+      console.log("[Call] Workflow ID:", process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID);
+      console.log("[Call] Type:", type);
+      console.log("[Call] Username:", userName);
+      console.log("[Call] UserId:", userId);
 
-    if (type === "generate") {
-      await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
-        variableValues: {
-          username: userName,
-          userid: userId,
-        },
-      });
-    } else {
-      let formattedQuestions = "";
-      if (questions) {
-        formattedQuestions = questions
-          .map((question) => `- ${question}`)
-          .join("\n");
+      if (type === "generate") {
+        const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+        if (!assistantId || assistantId === "PUT_YOUR_ASSISTANT_ID_HERE") {
+          console.error("[Call] Missing assistant ID");
+          alert(
+            "Please create an Assistant in Vapi Dashboard that uses your workflow, then add NEXT_PUBLIC_VAPI_ASSISTANT_ID to .env.local"
+          );
+          setCallStatus(CallStatus.INACTIVE);
+          return;
+        }
+
+        console.log("[Call] Creating interview record...");
+        // Create interview record first
+        const { success, interviewId: newInterviewId } = await createInterview({
+          userId: userId!,
+          role: "AI Generated Interview",
+          type: "Generated",
+        });
+
+        if (!success || !newInterviewId) {
+          alert("Failed to create interview. Please try again.");
+          setCallStatus(CallStatus.INACTIVE);
+          return;
+        }
+
+        console.log("[Call] Interview created with ID:", newInterviewId);
+        setCurrentInterviewId(newInterviewId);
+
+        console.log("[Call] Starting with assistant ID:", assistantId);
+
+        await vapi.start(assistantId);
+        
+        console.log("[Call] vapi.start() call completed");
+      } else {
+        let formattedQuestions = "";
+        if (questions) {
+          formattedQuestions = questions
+            .map((question) => `- ${question}`)
+            .join("\n");
+        }
+
+        console.log("[Call] Starting interview with assistant");
+        await vapi.start(interviewer, {
+          variableValues: {
+            questions: formattedQuestions,
+          },
+        });
+        
+        console.log("[Call] vapi.start() call completed");
       }
-
-      await vapi.start(interviewer, {
-        variableValues: {
-          questions: formattedQuestions,
-        },
-      });
+    } catch (error: any) {
+      console.error("❌ [Call] EXCEPTION CAUGHT:");
+      console.error("[Call] Error:", error);
+      console.error("[Call] Error message:", error?.message);
+      console.error("[Call] Error stack:", error?.stack);
+      
+      // Try to get more details from the error
+      if (error?.response) {
+        console.error("[Call] Error has response object");
+        try {
+          const text = await error.response.text();
+          console.error("[Call] Response text:", text);
+        } catch (e) {
+          console.error("[Call] Could not read response text");
+        }
+      }
+      
+      alert(
+        `Could not start the call. ${
+          error?.message || "Check console for details."
+        }`
+      );
+      setCallStatus(CallStatus.INACTIVE);
     }
   };
 
