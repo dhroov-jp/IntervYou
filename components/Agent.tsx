@@ -141,39 +141,74 @@ const Agent = ({
       console.log("[Call] Username:", userName);
       console.log("[Call] UserId:", userId);
 
+      // Request microphone permission first
+      try {
+        console.log("[Call] Requesting microphone permission...");
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("✅ [Call] Microphone permission granted");
+        // Stop the tracks immediately after permission is granted
+        stream.getTracks().forEach(track => track.stop());
+      } catch (micError: any) {
+        console.error("❌ [Call] Microphone permission denied:", micError);
+        alert("Microphone permission is required to start the interview. Please allow access and try again.");
+        setCallStatus(CallStatus.INACTIVE);
+        return;
+      }
+
       if (type === "generate") {
+        console.log("[Call] Generate interview flow starting...");
+        console.log("[Call] UserId:", userId);
+        
+        if (!userId) {
+          console.error("[Call] No userId provided");
+          alert("You must be logged in to start an interview. Please sign in.");
+          setCallStatus(CallStatus.INACTIVE);
+          return;
+        }
+
         const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+        console.log("[Call] Assistant ID:", assistantId?.substring(0, 10) + "...");
+        
         if (!assistantId || assistantId === "PUT_YOUR_ASSISTANT_ID_HERE") {
           console.error("[Call] Missing assistant ID");
           alert(
-            "Please create an Assistant in Vapi Dashboard that uses your workflow, then add NEXT_PUBLIC_VAPI_ASSISTANT_ID to .env.local"
+            "Assistant configuration error. Please contact support."
           );
           setCallStatus(CallStatus.INACTIVE);
           return;
         }
 
         console.log("[Call] Creating interview record...");
-        // Create interview record first
-        const { success, interviewId: newInterviewId } = await createInterview({
-          userId: userId!,
-          role: "AI Generated Interview",
-          type: "Generated",
-        });
+        try {
+          const result = await createInterview({
+            userId: userId!,
+            role: "AI Generated Interview",
+            type: "Generated",
+          });
 
-        if (!success || !newInterviewId) {
-          alert("Failed to create interview. Please try again.");
+          console.log("[Call] createInterview result:", result);
+
+          if (!result || !result.success || !result.interviewId) {
+            console.error("[Call] Interview creation failed:", result);
+            alert("Failed to create interview. Please check your connection and try again.");
+            setCallStatus(CallStatus.INACTIVE);
+            return;
+          }
+
+          console.log("[Call] Interview created with ID:", result.interviewId);
+          setCurrentInterviewId(result.interviewId);
+
+          console.log("[Call] Starting Vapi call with assistant ID:", assistantId.substring(0, 10) + "...");
+
+          await vapi.start(assistantId);
+          
+          console.log("[Call] vapi.start() call completed successfully");
+        } catch (createError: any) {
+          console.error("[Call] Error during interview creation:", createError);
+          alert(`Failed to create interview: ${createError?.message || "Unknown error"}`);
           setCallStatus(CallStatus.INACTIVE);
           return;
         }
-
-        console.log("[Call] Interview created with ID:", newInterviewId);
-        setCurrentInterviewId(newInterviewId);
-
-        console.log("[Call] Starting with assistant ID:", assistantId);
-
-        await vapi.start(assistantId);
-        
-        console.log("[Call] vapi.start() call completed");
       } else {
         let formattedQuestions = "";
         if (questions) {
